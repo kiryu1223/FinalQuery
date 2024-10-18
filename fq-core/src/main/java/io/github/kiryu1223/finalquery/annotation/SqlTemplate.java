@@ -12,7 +12,7 @@ public @interface SqlTemplate
 {
     String value();
 
-    SqlTemplateType templateType() default SqlTemplateType.Str;
+    SqlTemplateType templateType() default SqlTemplateType.String;
 
     SqlType sqlType() default SqlType.Select;
 }
