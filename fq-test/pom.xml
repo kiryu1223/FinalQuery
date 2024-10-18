@@ -51,6 +51,11 @@
                         <arg>-Xplugin:FinalQuery</arg>
                     </compilerArgs>
                     <annotationProcessorPaths>
+                        <dependency>
+                            <groupId>io.github.kiryu1223</groupId>
+                            <artifactId>fq-core</artifactId>
+                            <version>${project.version}</version>
+                        </dependency>
                         <path>
                             <groupId>org.projectlombok</groupId>
                             <artifactId>lombok</artifactId>

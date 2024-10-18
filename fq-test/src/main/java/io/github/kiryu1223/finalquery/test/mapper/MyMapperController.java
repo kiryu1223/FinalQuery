@@ -1,7 +1,7 @@
 package io.github.kiryu1223.finalquery.test.mapper;
 
 import io.github.kiryu1223.finalquery.api.Mappers;
-import io.github.kiryu1223.finalquery.test.mapper.impl.DepartmentMapperImpl;
+import io.github.kiryu1223.finalquery.test.check.DepartmentMapperImpl;
 
 // 用户写的
 public class MyMapperController extends Mappers

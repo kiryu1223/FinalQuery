@@ -4,9 +4,7 @@ import javax.sql.DataSource;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
 
 public interface BaseMapper
 {
@@ -20,6 +18,11 @@ public interface BaseMapper
             if(fieldNames.contains(columnLabel)) indexMap.put(columnLabel, i);
         }
         return indexMap;
+    }
+
+    default Set<Map.Entry<String, Integer>> getIndexEntrySet(ResultSet resultSet, String... fieldNames) throws SQLException
+    {
+        return getIndexMap(resultSet, Arrays.asList(fieldNames)).entrySet();
     }
 
     void setDataSource(DataSource dataSource);

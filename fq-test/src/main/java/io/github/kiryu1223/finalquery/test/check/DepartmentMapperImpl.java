@@ -1,4 +1,4 @@
-package io.github.kiryu1223.finalquery.test.mapper.impl;
+package io.github.kiryu1223.finalquery.test.check;
 
 import io.github.kiryu1223.finalquery.test.mapper.DepartmentMapper;
 import io.github.kiryu1223.finalquery.test.pojo.Department;
@@ -8,10 +8,7 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 public class DepartmentMapperImpl implements DepartmentMapper
 {
@@ -33,11 +30,11 @@ public class DepartmentMapperImpl implements DepartmentMapper
                 try (ResultSet resultSet = preparedStatement.executeQuery())
                 {
                     List<Department> departments = new ArrayList<>();
-                    Map<String, Integer> indexMap = getIndexMap(resultSet, Arrays.asList("dept_no", "dept_name"));
+                    Set<Map.Entry<String, Integer>> entrySets = getIndexEntrySet(resultSet, "dept_no", "dept_name");
                     while (resultSet.next())
                     {
                         Department department = new Department();
-                        for (Map.Entry<String, Integer> entry : indexMap.entrySet())
+                        for (Map.Entry<String, Integer> entry : entrySets)
                         {
                             switch (entry.getKey())
                             {
@@ -56,7 +53,7 @@ public class DepartmentMapperImpl implements DepartmentMapper
             }
             catch (SQLException e)
             {
-                connection.rollback();
+                //connection.rollback();
                 throw new RuntimeException(e);
             }
         }
