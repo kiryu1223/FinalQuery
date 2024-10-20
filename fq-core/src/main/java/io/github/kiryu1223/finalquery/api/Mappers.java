@@ -13,18 +13,18 @@ public abstract class Mappers
         cache.put(target, mapper);
     }
 
-    private DataSource dataSource;
+    private final ThreadLocal<DataSource> localDataSource = new ThreadLocal<>();
 
     public void setDataSource(DataSource dataSource)
     {
         assert dataSource != null : "dataSource should be not null";
-        this.dataSource = dataSource;
+        this.localDataSource.set(dataSource);
     }
 
     public <T extends BaseMapper> T getMapper(Class<T> target)
     {
         T mapper = (T) cache.get(target);
-        mapper.setDataSource(dataSource);
+        mapper.setDataSource(localDataSource.get());
         return mapper;
     }
 }

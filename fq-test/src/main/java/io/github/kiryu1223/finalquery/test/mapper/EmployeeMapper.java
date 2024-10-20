@@ -4,12 +4,13 @@ import io.github.kiryu1223.finalquery.annotation.Mapper;
 import io.github.kiryu1223.finalquery.annotation.SqlTemplate;
 import io.github.kiryu1223.finalquery.api.BaseMapper;
 import io.github.kiryu1223.finalquery.test.pojo.Department;
+import io.github.kiryu1223.finalquery.test.pojo.Employee;
 
 import java.util.List;
 
 @Mapper
-public interface DepartmentMapper extends BaseMapper
+public interface EmployeeMapper extends BaseMapper
 {
-    @SqlTemplate("SELECT * FROM departments AS d ORDER BY d.dept_no")
-    List<Department> getAll();
+    @SqlTemplate("SELECT * FROM employees")
+    List<Employee> getAll();
 }

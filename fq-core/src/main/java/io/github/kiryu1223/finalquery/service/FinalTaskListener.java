@@ -1,52 +1,67 @@
 package io.github.kiryu1223.finalquery.service;
 
+
+import com.squareup.javapoet.*;
 import com.sun.source.tree.CompilationUnitTree;
+import com.sun.source.tree.Tree;
 import com.sun.source.util.TaskEvent;
 import com.sun.source.util.TaskListener;
 import com.sun.tools.javac.code.Flags;
 import com.sun.tools.javac.code.Symbol;
-import com.sun.tools.javac.code.TypeTag;
+import com.sun.tools.javac.code.Type;
 import com.sun.tools.javac.processing.JavacProcessingEnvironment;
 import com.sun.tools.javac.tree.JCTree;
 import com.sun.tools.javac.tree.TreeMaker;
-import com.sun.tools.javac.util.*;
-import com.sun.tools.javac.util.List;
+import com.sun.tools.javac.util.Context;
+import com.sun.tools.javac.util.ListBuffer;
+import com.sun.tools.javac.util.Names;
 import io.github.kiryu1223.finalquery.annotation.Mapper;
+import io.github.kiryu1223.finalquery.annotation.MapperImpl;
+import io.github.kiryu1223.finalquery.annotation.MapperManager;
 import io.github.kiryu1223.finalquery.annotation.SqlTemplate;
-import io.github.kiryu1223.finalquery.api.BaseMapper;
+import io.github.kiryu1223.finalquery.service.util.*;
+import net.sf.jsqlparser.JSQLParserException;
+import net.sf.jsqlparser.expression.Alias;
+import net.sf.jsqlparser.parser.CCJSqlParserUtil;
+import net.sf.jsqlparser.statement.select.PlainSelect;
+import net.sf.jsqlparser.statement.select.Select;
+import net.sf.jsqlparser.statement.select.SelectItem;
+
 
 import javax.annotation.processing.Filer;
+import javax.lang.model.element.Modifier;
 import javax.sql.DataSource;
-import javax.tools.JavaFileObject;
 import java.io.IOException;
-import java.io.Writer;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.sql.*;
+import java.sql.Date;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.util.*;
+
+import static io.github.kiryu1223.finalquery.service.util.TypeUtil.*;
 
 public class FinalTaskListener implements TaskListener
 {
-    private final Context context;
     private final TreeMaker treeMaker;
     private final Names names;
     private final Filer filer;
-    private long parmaFlags = 8589934592L;
 
     public FinalTaskListener(Context context)
     {
-        this.context = context;
         treeMaker = TreeMaker.instance(context);
         names = Names.instance(context);
         JavacProcessingEnvironment instance = JavacProcessingEnvironment.instance(context);
         filer = instance.getFiler();
     }
 
+    private final Set<String> importedImpl = new HashSet<>();
+
     @Override
     public void started(TaskEvent e)
     {
-
     }
 
     @Override
@@ -61,16 +76,73 @@ public class FinalTaskListener implements TaskListener
             {
                 if (tree instanceof JCTree.JCClassDecl)
                 {
-                    JCTree.JCClassDecl mapperClass = (JCTree.JCClassDecl) tree;
-                    Mapper mapper = mapperClass.sym.getAnnotation(Mapper.class);
-                    if (mapper != null)
+                    JCTree.JCClassDecl classDecl = (JCTree.JCClassDecl) tree;
+                    Symbol.ClassSymbol classSymbol = classDecl.sym;
+                    // mapper
+                    if (classSymbol.isInterface() && classSymbol.getAnnotation(Mapper.class) != null)
                     {
-                        startBuildImplClass(unit, mapperClass);
+                        startBuildImplClass(unit, classDecl);
+                    }
+                    // mapper控制中心
+                    if (classSymbol.getAnnotation(MapperManager.class) != null)
+                    {
+                        String className = classSymbol.flatName().toString();
+                        if (mapperNames.contains(className)) continue;
+                        mapperNames.add(className);
+                        mapperCtrl.add(unit);
+                    }
+                    // 是否为生成的源码
+                    if (classSymbol.getAnnotation(MapperImpl.class) != null)
+                    {
+                        String fullName = classSymbol.flatName().toString();
+                        if (importedImpl.contains(fullName)) continue;
+                        importedImpl.add(fullName);
+
+                        for (JCTree.JCCompilationUnit jcCompilationUnit : mapperCtrl)
+                        {
+                            ListBuffer<JCTree> defs = new ListBuffer<>();
+                            JCTree.JCImport mapperImport = treeMaker.Import(treeMaker.Select(unit.getPackageName(), classSymbol.getInterfaces().get(0).asElement()), false);
+                            JCTree.JCImport mapperImplImport = treeMaker.Import(treeMaker.Select(unit.getPackageName(), classDecl.getSimpleName()), false);
+                            defs.add(mapperImport);
+                            defs.add(mapperImplImport);
+                            defs.addAll(jcCompilationUnit.defs);
+                            jcCompilationUnit.defs = defs.toList();
+                            for (JCTree typeDecl : jcCompilationUnit.getTypeDecls())
+                            {
+                                if (typeDecl.getKind() != Tree.Kind.CLASS) continue;
+                                JCTree.JCClassDecl classDecl0 = (JCTree.JCClassDecl) typeDecl;
+                                if (hasStaticBlock(classDecl0))
+                                {
+                                    for (JCTree member : classDecl0.getMembers())
+                                    {
+                                        if (member instanceof JCTree.JCBlock && ((JCTree.JCBlock) member).isStatic())
+                                        {
+                                            JCTree.JCBlock jcBlock = (JCTree.JCBlock) member;
+                                            ListBuffer<JCTree.JCStatement> statements = new ListBuffer<>();
+                                            statements.addAll(jcBlock.getStatements());
+                                            statements.add(setMapper(classDecl.sym.getInterfaces().get(0), classSymbol.asType()));
+                                            jcBlock.stats = statements.toList();
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    JCTree.JCBlock body = treeMaker.Block(Flags.STATIC, com.sun.tools.javac.util.List.of(setMapper(classDecl.sym.getInterfaces().get(0), classSymbol.asType())));
+                                    ListBuffer<JCTree> statements = new ListBuffer<>();
+                                    statements.addAll(classDecl0.getMembers());
+                                    statements.add(body);
+                                    classDecl0.defs = statements.toList();
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
+
+    private final Set<String> mapperNames = new HashSet<>();
+    private final Set<JCTree.JCCompilationUnit> mapperCtrl = new HashSet<>();
 
     private void startBuildImplClass(JCTree.JCCompilationUnit unit, JCTree.JCClassDecl mapperClass)
     {
@@ -81,361 +153,434 @@ public class FinalTaskListener implements TaskListener
         if (createdImpl.contains(fullName)) return;
         createdImpl.add(fullName);
 
-        List<JCTree> overrides = buildMethods(mapperClass);
-        JCTree.JCClassDecl implClass = treeMaker.ClassDef(treeMaker.Modifiers(Flags.PUBLIC), getName(implName), List.nil(), null, List.of(getIdent(BaseMapper.class)), overrides);
-        ListBuffer<JCTree> def = new ListBuffer<>();
-        def.addAll(unit.getImports());
-        def.addAll(baseImports());
-        def.add(implClass);
-        JCTree.JCCompilationUnit jcCompilationUnit = treeMaker.TopLevel(
-                unit.getPackageAnnotations(),
-                unit.getPackageName(),
-                def.toList()
-        );
-        tryCreateSourceFile(fullName, jcCompilationUnit.toString());
-    }
+        // 类名
+        ClassName className = ClassName.get(packageName, implName);
 
-    private List<JCTree> buildMethods(JCTree.JCClassDecl mapperClass)
-    {
-        ListBuffer<JCTree> result = new ListBuffer<>();
-        result.add(buildDataSourceField());
-        result.add(overrideDataSourceSetter());
+        // datasource字段
+        FieldSpec dataSource = FieldSpec.builder(DataSource.class, "dataSource", Modifier.PRIVATE).build();
+
+        // datasource setter实现
+        MethodSpec datasourceSetter = MethodSpec.methodBuilder("setDataSource")
+                .addModifiers(Modifier.PUBLIC)
+                .returns(TypeName.VOID)
+                .addParameter(DataSource.class, "dataSource")
+                .addStatement("this.dataSource = dataSource")
+                .build();
+
+        // 实现sql函数
+        List<MethodSpec> sqlMethods = new ArrayList<>();
         for (JCTree member : mapperClass.getMembers())
         {
             if (!(member instanceof JCTree.JCMethodDecl)) continue;
-            JCTree.JCMethodDecl jcMethodDecl = (JCTree.JCMethodDecl) member;
-            SqlTemplate sqlTemplate = jcMethodDecl.sym.getAnnotation(SqlTemplate.class);
+            JCTree.JCMethodDecl methodDecl = (JCTree.JCMethodDecl) member;
+            Symbol.MethodSymbol methodSymbol = methodDecl.sym;
+            SqlTemplate sqlTemplate = methodSymbol.getAnnotation(SqlTemplate.class);
             if (sqlTemplate == null) continue;
-            JCTree.JCBlock newBody = buildBody(sqlTemplate.value(), jcMethodDecl.restype);
-            JCTree.JCMethodDecl def = treeMaker.MethodDef(treeMaker.Modifiers(Flags.PUBLIC), jcMethodDecl.getName(), jcMethodDecl.restype, jcMethodDecl.getTypeParameters(), jcMethodDecl.getParameters(), jcMethodDecl.getThrows(), newBody, jcMethodDecl.defaultValue);
-            result.add(def);
+            Type returnType = methodSymbol.getReturnType();
+            MethodSpec sqlMethod = MethodSpec.overriding(methodSymbol)
+                    .addCode(genCode(dataSource, sqlTemplate.value(), returnType))
+                    .build();
+            sqlMethods.add(sqlMethod);
         }
-        return result.toList();
-    }
 
-    private JCTree.JCVariableDecl buildDataSourceField()
-    {
-        return treeMaker.VarDef(treeMaker.Modifiers(Flags.PRIVATE), getName("dataSource"), getIdent(DataSource.class), null);
-    }
+        //拼装类
+        TypeSpec implType = TypeSpec.classBuilder(className)
+                .addAnnotation(MapperImpl.class)
+                .addSuperinterface(mapperClass.sym.asType())
+                .addModifiers(Modifier.PUBLIC)
+                .addField(dataSource)
+                .addMethod(datasourceSetter)
+                .addMethods(sqlMethods)
+                .build();
 
-    private JCTree.JCMethodDecl overrideDataSourceSetter()
-    {
-        JCTree.JCVariableDecl jcVariableDecl = treeMaker.VarDef(treeMaker.Modifiers(parmaFlags), getName("dataSource"), getIdent(DataSource.class), null);
-        JCTree.JCAssign this_dataSource_dataSource = treeMaker.Assign(treeMaker.Select(treeMaker.Ident(names._this), getName("dataSource")), getIdent("dataSource"));
-        JCTree.JCExpressionStatement exec = treeMaker.Exec(this_dataSource_dataSource);
-        return treeMaker.MethodDef(treeMaker.Modifiers(Flags.PUBLIC), getName("setDataSource"), treeMaker.TypeIdent(TypeTag.VOID), List.nil(), List.of(jcVariableDecl), List.nil(), treeMaker.Block(0, List.of(exec)), null);
-    }
-
-    private JCTree.JCBlock buildBody(String sql, JCTree.JCExpression returnType)
-    {
-        return treeMaker.Block(0, List.of(getVar(Flags.FINAL, String.class, "sql", treeMaker.Literal(sql)), tryGetConnection(returnType)));
-    }
-
-    private JCTree.JCTry tryGetConnection(JCTree.JCExpression returnType)
-    {
-        return treeMaker.Try(
-                List.of(getVar(Connection.class, "connection", getMethodCall("dataSource", "getConnection"))),
-                treeMaker.Block(0, List.of(tryGetPreparedStatement(returnType))),
-                List.of(getCatch(SQLException.class, "e")),
-                null
-        );
-    }
-
-    private JCTree.JCTry tryGetPreparedStatement(JCTree.JCExpression returnType)
-    {
-        return treeMaker.Try(
-                List.of(getVar(PreparedStatement.class, "preparedStatement", getMethodCall("connection", "prepareStatement", List.of(getIdent("sql"))))),
-                treeMaker.Block(0, List.of(tryGetResultSet(returnType))),
-                List.of(getCatch(SQLException.class, "e")),
-                null
-        );
-    }
-
-    private JCTree.JCTry tryGetResultSet(JCTree.JCExpression returnType)
-    {
-        return treeMaker.Try(
-                List.of(getVar(ResultSet.class, "resultSet", getMethodCall("preparedStatement", "executeQuery"))),
-                treeMaker.Block(0, buildObjects(returnType)),
-                List.of(getCatch(SQLException.class, "e")),
-                null
-        );
-    }
-
-    private List<JCTree.JCStatement> buildObjects(JCTree.JCExpression returnType)
-    {
-        ListBuffer<JCTree.JCStatement> statements = new ListBuffer<>();
-        JCTree.JCIdent targetType = getTargetType(returnType);
-        Map<String, String> allField = getAllField((Symbol.ClassSymbol) targetType.sym);
-        statements.add(getResultList(targetType));
-        statements.add(getEntrySet(allField));
-        statements.add(getResultSetLoop(targetType, allField));
-        statements.add(getReturnNull());
-        return statements.toList();
-    }
-
-    private JCTree.JCIdent getTargetType(JCTree.JCExpression returnType)
-    {
-        if (returnType instanceof JCTree.JCTypeApply)
-        {
-            JCTree.JCTypeApply type = (JCTree.JCTypeApply) returnType;
-            return (JCTree.JCIdent) type.getTypeArguments().get(0);
-        }
-        else
-        {
-            throw new RuntimeException(returnType.toString());
-        }
-    }
-
-//    private JCTree.JCVariableDecl getResult(JCTree.JCExpression returnType)
-//    {
-//        if (returnType instanceof JCTree.JCTypeApply)
-//        {
-//            JCTree.JCTypeApply type = (JCTree.JCTypeApply) returnType;
-//            JCTree.JCIdent targetType = (JCTree.JCIdent) type.getTypeArguments().get(0);
-//            return getResultList(targetType);
-//        }
-//        else
-//        {
-//            throw new RuntimeException(returnType.toString());
-//        }
-//    }
-
-    private JCTree.JCVariableDecl getEntrySet(Map<String, String> allField)
-    {
-        ListBuffer<JCTree.JCExpression> args = new ListBuffer<>();
-        args.add(getIdent("resultSet"));
-        for (String s : allField.keySet())
-        {
-            args.add(treeMaker.Literal(s));
-        }
-        return treeMaker.VarDef(
-                treeMaker.Modifiers(0),
-                getName("entrySets"),
-                treeMaker.TypeApply(
-                        getIdent(Set.class),
-                        List.of(treeMaker.TypeApply(getIdent("Map.Entry"), List.of(getIdent(String.class), getIdent(Integer.class))))
-                ),
-                getMethodCall("getIndexEntrySet", args.toList())
-        );
-    }
-
-    private JCTree.JCWhileLoop getResultSetLoop(JCTree.JCIdent targetType, Map<String, String> allField)
-    {
-        JCTree.JCVariableDecl temp = treeMaker.VarDef(treeMaker.Modifiers(0), getName("t"), targetType, getNewClass(targetType));
-        ListBuffer<JCTree.JCStatement> statements = new ListBuffer<>();
-        JCTree.JCTypeApply map_Entry = treeMaker.TypeApply(getIdent("Map.Entry"), List.of(getIdent(String.class), getIdent(Integer.class)));
-        treeMaker.ForeachLoop(getVar(map_Entry, "entry"), getIdent("entrySets"), treeMaker.Block(0, List.of(getSwitchFields())));
-        statements.add(temp);
-        return treeMaker.WhileLoop(getMethodCall("resultSet", "next"), treeMaker.Block(0, statements.toList()));
-    }
-
-    //    for (Map.Entry<String, Integer> entry : entrySets)
-//    {
-//        switch (entry.getKey())
-//        {
-//            case "dept_no":
-//                department.setNumber(resultSet.getString(entry.getValue()));
-//                break;
-//            case "dept_name":
-//                department.setName(resultSet.getString(entry.getValue()));
-//                break;
-//        }
-//    }
-    private JCTree.JCSwitch getSwitchFields()
-    {
-        return treeMaker.Switch(getMethodCall("entry", "getKey"), );
-    }
-
-    private Map<String, String> getAllField(Symbol.ClassSymbol classSymbol)
-    {
-        Map<String, String> stringStringMap = new HashMap<>();
-        for (Symbol enclosedElement : classSymbol.getEnclosedElements())
-        {
-            if (enclosedElement instanceof Symbol.VarSymbol)
-            {
-                Symbol.VarSymbol varSymbol = (Symbol.VarSymbol) enclosedElement;
-                stringStringMap.put(varSymbol.getSimpleName().toString(), varSymbol.getSimpleName().toString());
-            }
-        }
-        return stringStringMap;
-    }
-
-    private JCTree.JCVariableDecl getResultList(JCTree.JCExpression targetType)
-    {
-        List<JCTree.JCExpression> gen = List.of(targetType);
-        return treeMaker.VarDef(
-                treeMaker.Modifiers(0),
-                getName("result"),
-                treeMaker.TypeApply(getIdent(java.util.List.class), gen),
-                getNewClass(gen, ArrayList.class)
-        );
-    }
-
-
-    private JCTree.JCNewClass getNewClass(Class<?> type)
-    {
-        return getNewClass(type.getSimpleName());
-    }
-
-    private JCTree.JCNewClass getNewClass(List<JCTree.JCExpression> typeargs, Class<?> type)
-    {
-        return getNewClass(typeargs, type.getSimpleName());
-    }
-
-    private JCTree.JCNewClass getNewClass(String type)
-    {
-        return getNewClass(type, List.nil());
-    }
-
-    private JCTree.JCNewClass getNewClass(String type, List<JCTree.JCExpression> args)
-    {
-        return getNewClass(List.nil(), type, args);
-    }
-
-    private JCTree.JCNewClass getNewClass(List<JCTree.JCExpression> typeargs, String type)
-    {
-        return getNewClass(typeargs, type, List.nil());
-    }
-
-    private JCTree.JCNewClass getNewClass(JCTree.JCIdent ident)
-    {
-        return treeMaker.NewClass(null, List.nil(), ident, List.nil(), null);
-    }
-
-    private JCTree.JCNewClass getNewClass(List<JCTree.JCExpression> typeargs, String type, List<JCTree.JCExpression> args)
-    {
-        return treeMaker.NewClass(null, typeargs, getIdent(type), args, null);
-    }
-
-    private JCTree.JCMethodInvocation getMethodCall(String methodName, List<JCTree.JCExpression> arg)
-    {
-        return treeMaker.Apply(List.nil(), getIdent(methodName), arg);
-    }
-
-    private JCTree.JCMethodInvocation getMethodCall(String caller, String methodName)
-    {
-        return getMethodCall(caller, methodName, List.nil());
-    }
-
-    private JCTree.JCMethodInvocation getMethodCall(String caller, String methodName, List<JCTree.JCExpression> arg)
-    {
-        return treeMaker.Apply(List.nil(), treeMaker.Select(getIdent(caller), getName(methodName)), arg);
-    }
-
-    private JCTree.JCReturn getReturnNull()
-    {
-        return treeMaker.Return(getNull());
-    }
-
-    private JCTree.JCCatch getCatch(Class<? extends Throwable> throwable, String name)
-    {
-        return treeMaker.Catch(getVar(throwable, name), treeMaker.Block(0, List.of(getThrow(RuntimeException.class, List.of(getIdent(name))))));
-    }
-
-    private JCTree.JCThrow getThrow(Class<? extends Throwable> throwable, List<JCTree.JCExpression> args)
-    {
-        return treeMaker.Throw(treeMaker.NewClass(null, List.nil(), getIdent(throwable), args, null));
-    }
-
-    private JCTree.JCLiteral getNull()
-    {
-        return treeMaker.Literal(TypeTag.BOT, null);
-    }
-
-    private JCTree.JCIdent getIdent(Class<?> type)
-    {
-        return getIdent(type.getSimpleName());
-    }
-
-    private JCTree.JCIdent getIdent(String name)
-    {
-        return treeMaker.Ident(getName(name));
-    }
-
-    private Name getName(String name)
-    {
-        return names.fromString(name);
-    }
-
-    private JCTree.JCVariableDecl getVar(JCTree.JCExpression type, String name)
-    {
-        return treeMaker.VarDef(treeMaker.Modifiers(0), getName(name), type, null);
-    }
-
-    private JCTree.JCVariableDecl getVar(Class<?> type, String name)
-    {
-        return getVar(0, type, name, null);
-    }
-
-    private JCTree.JCVariableDecl getVar(Class<?> type, String name, JCTree.JCExpression init)
-    {
-        return getVar(0, type, name, init);
-    }
-
-    private JCTree.JCVariableDecl getVar(long flags, Class<?> type, String name)
-    {
-        return getVar(flags, type, name, null);
-    }
-
-    private JCTree.JCVariableDecl getVar(long flags, Class<?> type, String name, JCTree.JCExpression init)
-    {
-        return treeMaker.VarDef(treeMaker.Modifiers(flags), getName(name), getIdent(type), init);
-    }
-
-    //import javax.sql.DataSource;
-    //import java.sql.Connection;
-    //import java.sql.PreparedStatement;
-    //import java.sql.ResultSet;
-    //import java.sql.SQLException;
-    //import java.util.ArrayList;
-    //import java.util.Arrays;
-    //import java.util.List;
-    //import java.util.Map;
-    private ListBuffer<JCTree.JCImport> baseImports()
-    {
-        ListBuffer<JCTree.JCImport> imports = new ListBuffer<>();
-
-        imports.add(makeImport(javax.sql.DataSource.class));
-        imports.add(makeImport(java.sql.Connection.class));
-        imports.add(makeImport(java.sql.PreparedStatement.class));
-        imports.add(makeImport(java.sql.ResultSet.class));
-        imports.add(makeImport(java.sql.SQLException.class));
-
-        imports.add(makeImport(java.util.List.class));
-        imports.add(makeImport(java.util.Set.class));
-        imports.add(makeImport(java.util.Map.class));
-
-        imports.add(makeImport(java.util.ArrayList.class));
-        imports.add(makeImport(java.util.HashSet.class));
-        imports.add(makeImport(java.util.HashMap.class));
-
-        imports.add(makeImport(java.util.Arrays.class));
-
-        return imports;
-    }
-
-    private JCTree.JCImport makeImport(Class<?> type)
-    {
-        String canonicalName = type.getCanonicalName();
-        String[] split = canonicalName.split("\\.", 2);
-        return treeMaker.Import(treeMaker.Select(getIdent(split[0]), getName(split[1])), false);
-    }
-
-    private final Set<String> createdImpl = new HashSet<>();
-
-    private void tryCreateSourceFile(String fullName, String code)
-    {
+        JavaFile javaFile = JavaFile.builder(packageName, implType).build();
         try
         {
-            JavaFileObject sourceFile = filer.createSourceFile(fullName);
-            try (Writer writer = sourceFile.openWriter())
-            {
-                writer.write(code);
-            }
+            javaFile.writeTo(filer);
         }
         catch (IOException e)
         {
             throw new RuntimeException(e);
         }
     }
+
+    private JCTree.JCStatement setMapper(Type mapperType, Type implType)
+    {
+        return treeMaker.Exec(
+                treeMaker.Apply(
+                        com.sun.tools.javac.util.List.nil(),
+                        treeMaker.Ident(names.fromString("setMapper")),
+                        com.sun.tools.javac.util.List.of(
+                                treeMaker.Select(treeMaker.Ident(mapperType.asElement()), names._class),
+                                treeMaker.NewClass(null, com.sun.tools.javac.util.List.nil(), treeMaker.Ident(implType.asElement()), com.sun.tools.javac.util.List.nil(), null)
+                        )
+                )
+        );
+    }
+
+    private boolean hasStaticBlock(JCTree.JCClassDecl classDecl)
+    {
+        for (JCTree member : classDecl.getMembers())
+        {
+            if (member instanceof JCTree.JCBlock
+                    && ((JCTree.JCBlock) member).isStatic())
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private CodeBlock genCode(FieldSpec dataSource, String sql, Type returnType)
+    {
+        boolean hasStar = false;
+        try
+        {
+            Select select = (Select) CCJSqlParserUtil.parse(sql);
+            PlainSelect plainSelect = select.getPlainSelect();
+            for (SelectItem<?> item : plainSelect.getSelectItems())
+            {
+                if (item.toString().equals("*") || item.toString().contains(".*"))
+                {
+                    hasStar = true;
+                    break;
+                }
+            }
+        }
+        catch (JSQLParserException e)
+        {
+            throw new RuntimeException(e);
+        }
+
+
+        Type TargetType = returnType.getTypeArguments().get(0);
+        FieldSpec connection = FieldSpec.builder(Connection.class, "connection").build();
+        FieldSpec preparedStatement = FieldSpec.builder(PreparedStatement.class, "preparedStatement").build();
+        FieldSpec resultSet = FieldSpec.builder(ResultSet.class, "resultSet").build();
+        FieldSpec result = FieldSpec.builder(TypeName.get(returnType), "result").build();
+        FieldSpec entrySets = FieldSpec.builder(StringIntSet.class, "entrySets").build();
+        FieldSpec t = FieldSpec.builder(TypeName.get(TargetType), "t").build();
+        return CodeBlock.builder()
+                .beginControlFlow("try ($T $N = $N.getConnection())", Connection.class, connection, dataSource)
+                .beginControlFlow("try ($T $N = $N.prepareStatement($S))", PreparedStatement.class, preparedStatement, connection, sql)
+                //.addStatement("$T $N = $N.prepareStatement($S)", PreparedStatement.class, preparedStatement, connection, sql)
+                .beginControlFlow("try ($T $N = $N.executeQuery())", ResultSet.class, resultSet, preparedStatement)
+                //.addStatement("$T $N = $N.executeQuery()", ResultSet.class, resultSet, preparedStatement)
+                .addStatement("$T $N = new $T()", TypeName.get(returnType), result, ParameterizedTypeName.get(ClassName.get(ArrayList.class), TypeName.get(TargetType)))
+                .addStatement(stringIntSet(TargetType, entrySets, resultSet,hasStar))
+                .beginControlFlow("while ($N.next())", resultSet)
+                .addStatement(newClass(TargetType, t))
+                .add(unKnowOrKnowIndex(sql, entrySets, t, resultSet, TargetType))
+                //for + switch
+//                .beginControlFlow("for ($T $N : $N)", StringIntPair.class, entry, entrySets)
+//                .add(sw(t, resultSet, entry, TargetType))
+//                .endControlFlow()
+                .addStatement("$N.$L($N)", result, "add", t)
+                .endControlFlow()
+                .addStatement("return $N", result)
+                .endControlFlow()
+                .endControlFlow()
+                .endControlFlow()
+                .beginControlFlow("catch ($T e)", SQLException.class)
+                .addStatement("throw new $T(e)", RuntimeException.class)
+                .endControlFlow()
+                .build();
+    }
+
+    private CodeBlock stringIntSet(Type TargetType, FieldSpec entrySets, FieldSpec resultSet,boolean hasStar)
+    {
+        if (hasStar)
+        {
+            StringBuilder sb = new StringBuilder();
+            List<Object> args = new ArrayList<>();
+            args.add(StringIntSet.class);
+            args.add(entrySets);
+            args.add(resultSet);
+            sb.append("$T $N = getIndexEntrySet($N");
+            TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
+            for (FieldMetaData fieldMetaData : typeMetaData.getFieldMetaData())
+            {
+                sb.append(",$S");
+                args.add(fieldMetaData.getColumnName());
+            }
+            sb.append(")");
+            return CodeBlock.builder()
+                    .add(sb.toString(), args.toArray())
+                    .build();
+        }
+        else
+        {
+            return CodeBlock.of("");
+        }
+    }
+
+    private CodeBlock newClass(Type TargetType, FieldSpec t)
+    {
+        return CodeBlock.builder()
+                .add("$T $N = new $T()", TypeName.get(TargetType), t, TypeName.get(TargetType))
+                .build();
+    }
+
+    private CodeBlock unKnowOrKnowIndex(String sql, FieldSpec entrySets, FieldSpec t, FieldSpec resultSet, Type TargetType)
+    {
+        boolean hasStar = false;
+        Map<Integer, FieldMetaData> names = new LinkedHashMap<>();
+        try
+        {
+            Select select = (Select) CCJSqlParserUtil.parse(sql);
+            PlainSelect plainSelect = select.getPlainSelect();
+            List<SelectItem<?>> selectItems = plainSelect.getSelectItems();
+            TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
+            List<FieldMetaData> fieldMetaData = typeMetaData.getFieldMetaData();
+            for (int i = 0; i < selectItems.size(); i++)
+            {
+                SelectItem<?> item = selectItems.get(i);
+                String itemName = item.toString();
+                if (itemName.equals("*") || itemName.contains(".*"))
+                {
+                    hasStar = true;
+                    break;
+                }
+                Alias alias = item.getAlias();
+                String targetName = alias == null ? itemName : alias.getName();
+                String cleared = SqlUtil.clearColumn(targetName);
+                Optional<FieldMetaData> first = fieldMetaData.stream().filter(f -> f.getColumnName().equals(cleared)).findFirst();
+                if (first.isPresent())
+                {
+                    names.put(i + 1, first.get());
+                }
+            }
+        }
+        catch (JSQLParserException e)
+        {
+            throw new RuntimeException(e);
+        }
+        if (!hasStar)
+        {
+            return knowIndex(entrySets, t, resultSet, TargetType, names);
+        }
+        else
+        {
+            return unKnowIndex(entrySets, t, resultSet, TargetType);
+        }
+    }
+
+    private CodeBlock knowIndex(FieldSpec entrySets, FieldSpec t, FieldSpec resultSet, Type TargetType, Map<Integer, FieldMetaData> fieldMetaDataMap)
+    {
+        CodeBlock.Builder builder = CodeBlock.builder();
+        int index = 1;
+        for (Map.Entry<Integer, FieldMetaData> entry : fieldMetaDataMap.entrySet())
+        {
+            FieldMetaData metaData = entry.getValue();
+            TypeName varType = TypeName.get(metaData.getType());
+            FieldSpec value = FieldSpec.builder(varType, "value" + index).build();
+
+            builder.add(getValue(metaData.getType(), value, resultSet, CodeBlock.of("$L", entry.getKey()),index))
+                    .addStatement("$N.$L($N)", t, metaData.getSetterName(), value);
+            index++;
+        }
+        return builder.build();
+    }
+
+    private CodeBlock unKnowIndex(FieldSpec entrySets, FieldSpec t, FieldSpec resultSet, Type TargetType)
+    {
+        FieldSpec entry = FieldSpec.builder(StringIntPair.class, "entry").build();
+        return CodeBlock.builder()
+                .beginControlFlow("for ($T $N : $N)", StringIntPair.class, entry, entrySets)
+                .add(sw(t, resultSet, entry, TargetType))
+                .endControlFlow()
+                .build();
+    }
+
+    private CodeBlock sw(FieldSpec t, FieldSpec resultSet, FieldSpec entry, Type TargetType)
+    {
+        CodeBlock.Builder sw = CodeBlock.builder()
+                .beginControlFlow("switch ($N.$L())", entry, "getName");
+        TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
+        for (FieldMetaData metaData : typeMetaData.getFieldMetaData())
+        {
+            sw.beginControlFlow("case $S:", metaData.getColumnName());
+            TypeName varType = TypeName.get(metaData.getType());
+            FieldSpec value = FieldSpec.builder(varType, "value").build();
+
+            // getValue
+            sw.add(getValue(metaData.getType(), value, resultSet, CodeBlock.of("$N.$L()", entry, "getIndex")));
+
+            // setValue
+            sw.addStatement("$N.$L($N)", t, metaData.getSetterName(), value);
+
+            sw.endControlFlow("break");
+        }
+        sw.endControlFlow();
+        return sw.build();
+    }
+
+    private CodeBlock getValue(Type type, FieldSpec value, FieldSpec resultSet, CodeBlock index)
+    {
+        return getValue(type, value, resultSet, index, 0);
+    }
+
+    private CodeBlock getValue(Type type, FieldSpec value, FieldSpec resultSet, CodeBlock index, int i)
+    {
+        String ii = "";
+        if (i != 0)
+        {
+            ii = String.valueOf(i);
+        }
+        if (isString(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getString", index)
+                    .build();
+        }
+        else if (isChar(type))
+        {
+            FieldSpec temp = FieldSpec.builder(String.class, "temp" + ii).build();
+            return CodeBlock.builder()
+                    // String temp = resultSet.getString(index)
+                    .addStatement("$T $N = $N.$L($L)", String.class, temp, resultSet, "getString", index)
+                    // char value = temp.charAt(0)
+                    .addStatement("$T $N = $N.charAt(0)", char.class, value, temp)
+                    .build();
+        }
+        else if (isByte(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getByte", index)
+                    .build();
+        }
+        else if (isShort(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getShort", index)
+                    .build();
+        }
+        else if (isInt(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getInt", index)
+                    .build();
+        }
+        else if (isLong(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getLong", index)
+                    .build();
+        }
+        else if (isBool(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getBoolean", index)
+                    .build();
+        }
+        else if (isFloat(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getFloat", index)
+                    .build();
+        }
+        else if (isDouble(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getDouble", index)
+                    .build();
+        }
+        else if (isDate(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getDate", index)
+                    .build();
+        }
+        else if (isTime(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getTime", index)
+                    .build();
+        }
+        else if (isTimestamp(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getTimestamp", index)
+                    .build();
+        }
+        else if (isLocalDate(type))
+        {
+            FieldSpec temp = FieldSpec.builder(Date.class, "temp" + ii).build();
+            return CodeBlock.builder()
+                    // Date temp = resultSet.getDate(index)
+                    .addStatement("$T $N = $N.$L($L)", Date.class, temp, resultSet, "getDate", index)
+                    // LocalDate value = temp.toLocalDate()
+                    .addStatement("$T $N = $N.toLocalDate()", LocalDate.class, value, temp)
+                    .build();
+        }
+        else if (isLocalTime(type))
+        {
+            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + ii).build();
+            return CodeBlock.builder()
+                    // Time temp = resultSet.getTime(index)
+                    .addStatement("$T $N = $N.$L($L)", Time.class, temp, resultSet, "getTime", index)
+                    // LocalTime value = temp.toLocalTime()
+                    .addStatement("$T $N = $N.toLocalTime()", LocalTime.class, value, temp)
+                    .build();
+        }
+        else if (isLocalDateTime(type))
+        {
+            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + ii).build();
+            return CodeBlock.builder()
+                    // Timestamp temp = resultSet.getTimestamp(index)
+                    .addStatement("$T $N = $N.$L($L)", Timestamp.class, temp, resultSet, "getTimestamp", index)
+                    // LocalDateTime value = temp.toLocalDateTime()
+                    .addStatement("$T $N = $N.toLocalDateTime()", LocalDateTime.class, value, temp)
+                    .build();
+        }
+        else if (isBigDecimal(type))
+        {
+            return CodeBlock.builder()
+                    .addStatement("$T $N = $N.$L($L)", TypeName.get(type), value, resultSet, "getBigDecimal", index)
+                    .build();
+        }
+        else if (isBigInteger(type))
+        {
+            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + ii).build();
+            return CodeBlock.builder()
+                    // BigDecimal temp = resultSet.getBigDecimal(index)
+                    .addStatement("$T $N = $N.$L($L)", BigDecimal.class, temp, resultSet, "getBigDecimal", index)
+                    // BigInteger value = temp.toBigInteger()
+                    .addStatement("$T $N = $N.toBigInteger()", BigInteger.class, value, temp)
+                    .build();
+        }
+        else if (isEnum(type))
+        {
+            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + ii).build();
+            return CodeBlock.builder()
+                    // String temp = resultSet.getString(index)
+                    .addStatement("$T $N = $N.$L($L)", String.class, temp, resultSet, "getString", index)
+                    // Enum<T> value = Enum<T>.valueOf(temp)
+                    .addStatement("$T $N = $T.valueOf($N)", TypeName.get(type), value, TypeName.get(type), temp)
+                    .build();
+        }
+        else
+        {
+            throw new RuntimeException(type.toString());
+        }
+    }
+
+    private CodeBlock getByName(FieldSpec t, Type TargetType, FieldSpec resultSet)
+    {
+        TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
+        CodeBlock.Builder builder = CodeBlock.builder();
+        for (FieldMetaData metaData : typeMetaData.getFieldMetaData())
+        {
+            TypeName varType = TypeName.get(metaData.getType());
+            FieldSpec value = FieldSpec.builder(varType, "value").build();
+            builder.beginControlFlow("")
+                    .add(getValue(metaData.getType(), value, resultSet, CodeBlock.of("$S", metaData.getColumnName())))
+                    .addStatement("$N.$L($N)", t, metaData.getSetterName(), value)
+                    .endControlFlow()
+                    .build();
+        }
+        return builder.build();
+    }
+
+    private final Set<String> createdImpl = new HashSet<>();
 }
