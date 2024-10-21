@@ -110,28 +110,11 @@ public class FinalTaskListener implements TaskListener
                             {
                                 if (typeDecl.getKind() != Tree.Kind.CLASS) continue;
                                 JCTree.JCClassDecl classDecl0 = (JCTree.JCClassDecl) typeDecl;
-                                if (hasStaticBlock(classDecl0))
-                                {
-                                    for (JCTree member : classDecl0.getMembers())
-                                    {
-                                        if (member instanceof JCTree.JCBlock && ((JCTree.JCBlock) member).isStatic())
-                                        {
-                                            JCTree.JCBlock jcBlock = (JCTree.JCBlock) member;
-                                            ListBuffer<JCTree.JCStatement> statements = new ListBuffer<>();
-                                            statements.addAll(jcBlock.getStatements());
-                                            statements.add(setMapper(classDecl.sym.getInterfaces().get(0), classSymbol.asType()));
-                                            jcBlock.stats = statements.toList();
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    JCTree.JCBlock body = treeMaker.Block(Flags.STATIC, com.sun.tools.javac.util.List.of(setMapper(classDecl.sym.getInterfaces().get(0), classSymbol.asType())));
-                                    ListBuffer<JCTree> statements = new ListBuffer<>();
-                                    statements.addAll(classDecl0.getMembers());
-                                    statements.add(body);
-                                    classDecl0.defs = statements.toList();
-                                }
+                                JCTree.JCBlock body = treeMaker.Block(Flags.STATIC, com.sun.tools.javac.util.List.of(setMapper(classDecl.sym.getInterfaces().get(0), classSymbol.asType())));
+                                ListBuffer<JCTree> statements = new ListBuffer<>();
+                                statements.addAll(classDecl0.getMembers());
+                                statements.add(body);
+                                classDecl0.defs = statements.toList();
                             }
                         }
                     }
