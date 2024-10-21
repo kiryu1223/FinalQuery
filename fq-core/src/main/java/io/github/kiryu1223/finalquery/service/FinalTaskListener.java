@@ -27,15 +27,14 @@ import net.sf.jsqlparser.statement.select.PlainSelect;
 import net.sf.jsqlparser.statement.select.Select;
 import net.sf.jsqlparser.statement.select.SelectItem;
 
-
 import javax.annotation.processing.Filer;
 import javax.lang.model.element.Modifier;
 import javax.sql.DataSource;
 import java.io.IOException;
 import java.math.BigDecimal;
 import java.math.BigInteger;
-import java.sql.*;
 import java.sql.Date;
+import java.sql.*;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
@@ -234,10 +233,11 @@ public class FinalTaskListener implements TaskListener
     private CodeBlock genCode(FieldSpec dataSource, String sql, Type returnType)
     {
         boolean hasStar = false;
+        PlainSelect plainSelect;
         try
         {
             Select select = (Select) CCJSqlParserUtil.parse(sql);
-            PlainSelect plainSelect = select.getPlainSelect();
+            plainSelect = select.getPlainSelect();
             for (SelectItem<?> item : plainSelect.getSelectItems())
             {
                 if (item.toString().equals("*") || item.toString().contains(".*"))
@@ -253,65 +253,131 @@ public class FinalTaskListener implements TaskListener
         }
 
 
-        Type TargetType = returnType.getTypeArguments().get(0);
+//        Type TargetType = returnType.getTypeArguments().get(0);
         FieldSpec connection = FieldSpec.builder(Connection.class, "connection").build();
         FieldSpec preparedStatement = FieldSpec.builder(PreparedStatement.class, "preparedStatement").build();
         FieldSpec resultSet = FieldSpec.builder(ResultSet.class, "resultSet").build();
-        FieldSpec result = FieldSpec.builder(TypeName.get(returnType), "result").build();
+
         FieldSpec entrySets = FieldSpec.builder(StringIntSet.class, "entrySets").build();
-        FieldSpec t = FieldSpec.builder(TypeName.get(TargetType), "t").build();
-        return CodeBlock.builder()
-                .beginControlFlow("try ($T $N = $N.getConnection())", Connection.class, connection, dataSource)
-                .beginControlFlow("try ($T $N = $N.prepareStatement($S))", PreparedStatement.class, preparedStatement, connection, sql)
-                //.addStatement("$T $N = $N.prepareStatement($S)", PreparedStatement.class, preparedStatement, connection, sql)
-                .beginControlFlow("try ($T $N = $N.executeQuery())", ResultSet.class, resultSet, preparedStatement)
-                //.addStatement("$T $N = $N.executeQuery()", ResultSet.class, resultSet, preparedStatement)
-                .addStatement("$T $N = new $T()", TypeName.get(returnType), result, ParameterizedTypeName.get(ClassName.get(ArrayList.class), TypeName.get(TargetType)))
-                .addStatement(stringIntSet(TargetType, entrySets, resultSet,hasStar))
-                .beginControlFlow("while ($N.next())", resultSet)
-                .addStatement(newClass(TargetType, t))
-                .add(unKnowOrKnowIndex(sql, entrySets, t, resultSet, TargetType))
-                //for + switch
-//                .beginControlFlow("for ($T $N : $N)", StringIntPair.class, entry, entrySets)
-//                .add(sw(t, resultSet, entry, TargetType))
+        return createCPR(dataSource, connection, preparedStatement, resultSet, sql, createBuild(hasStar, plainSelect, returnType, entrySets, resultSet));
+//        return CodeBlock.builder()
+//                .beginControlFlow("try ($T $N = $N.getConnection())", Connection.class, connection, dataSource)
+//                .beginControlFlow("try ($T $N = $N.prepareStatement($S))", PreparedStatement.class, preparedStatement, connection, sql)
+//                //.addStatement("$T $N = $N.prepareStatement($S)", PreparedStatement.class, preparedStatement, connection, sql)
+//                .beginControlFlow("try ($T $N = $N.executeQuery())", ResultSet.class, resultSet, preparedStatement)
+//                //.addStatement("$T $N = $N.executeQuery()", ResultSet.class, resultSet, preparedStatement)
+//                .addStatement("$T $N = new $T()", TypeName.get(returnType), result, ParameterizedTypeName.get(ClassName.get(ArrayList.class), TypeName.get(TargetType)))
+//                .addStatement(stringIntSet(TargetType, entrySets, resultSet, hasStar))
+//                .beginControlFlow("while ($N.next())", resultSet)
+//                .addStatement(newClass(TargetType, t))
+//                .add(unKnowOrKnowIndex(sql, entrySets, t, resultSet, TargetType))
+//                //for + switch
+////                .beginControlFlow("for ($T $N : $N)", StringIntPair.class, entry, entrySets)
+////                .add(sw(t, resultSet, entry, TargetType))
+////                .endControlFlow()
+//                .addStatement("$N.$L($N)", result, "add", t)
 //                .endControlFlow()
-                .addStatement("$N.$L($N)", result, "add", t)
+//                .addStatement("return $N", result)
+//                .endControlFlow()
+//                .endControlFlow()
+//                .endControlFlow()
+//                .beginControlFlow("catch ($T e)", SQLException.class)
+//                .addStatement("throw new $T(e)", RuntimeException.class)
+//                .endControlFlow()
+//                .build();
+    }
+
+    private CodeBlock createCPR(FieldSpec dataSource, FieldSpec connection, FieldSpec preparedStatement, FieldSpec resultSet, String sql, CodeBlock build)
+    {
+        FieldSpec e = FieldSpec.builder(SQLException.class, "e").build();
+        return CodeBlock.builder()
+                .beginControlFlow("try ($T $N = $N.$L())", Connection.class, connection, dataSource, "getConnection")
+                .beginControlFlow("try ($T $N = $N.$L($S))", PreparedStatement.class, preparedStatement, connection, "prepareStatement", sql)
+                .beginControlFlow("try ($T $N = $N.$L())", ResultSet.class, resultSet, preparedStatement, "executeQuery")
+                .add(build)
                 .endControlFlow()
-                .addStatement("return $N", result)
                 .endControlFlow()
-                .endControlFlow()
-                .endControlFlow()
-                .beginControlFlow("catch ($T e)", SQLException.class)
-                .addStatement("throw new $T(e)", RuntimeException.class)
+                .nextControlFlow("catch ($T $N)", SQLException.class, e)
+                .addStatement("throw new $T($N)", RuntimeException.class, e)
                 .endControlFlow()
                 .build();
     }
 
-    private CodeBlock stringIntSet(Type TargetType, FieldSpec entrySets, FieldSpec resultSet,boolean hasStar)
+    private CodeBlock createBuild(boolean hasStar, PlainSelect plainSelect, Type returnType, FieldSpec entrySets, FieldSpec resultSet)
     {
+        Type targetType = returnType.getTypeArguments().get(0);
         if (hasStar)
         {
-            StringBuilder sb = new StringBuilder();
-            List<Object> args = new ArrayList<>();
-            args.add(StringIntSet.class);
-            args.add(entrySets);
-            args.add(resultSet);
-            sb.append("$T $N = getIndexEntrySet($N");
-            TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
-            for (FieldMetaData fieldMetaData : typeMetaData.getFieldMetaData())
-            {
-                sb.append(",$S");
-                args.add(fieldMetaData.getColumnName());
-            }
-            sb.append(")");
+            FieldSpec result = FieldSpec.builder(TypeName.get(returnType), "result").build();
+            FieldSpec t = FieldSpec.builder(TypeName.get(targetType), "t").build();
             return CodeBlock.builder()
-                    .add(sb.toString(), args.toArray())
+                    .addStatement(stringIntSet(targetType, entrySets, resultSet))
+                    .addStatement("$T $N = new $T()", returnType, result, ParameterizedTypeName.get(ClassName.get(ArrayList.class), TypeName.get(targetType)))
+                    .beginControlFlow("while ($N.next())", resultSet)
+                    .addStatement(newClass(targetType, t))
+                    .add(unKnowIndex(entrySets, t, resultSet, targetType))
+                    .addStatement("$N.$L($N)", result, "add", t)
+                    .endControlFlow()
+                    .addStatement("return $N", result)
                     .build();
         }
         else
         {
-            return CodeBlock.of("");
+            Map<Integer, FieldMetaData> names = getIntegerFieldMetaDataMap(plainSelect, targetType);
+            FieldSpec result = FieldSpec.builder(TypeName.get(returnType), "result").build();
+            FieldSpec t = FieldSpec.builder(TypeName.get(targetType), "t").build();
+            return CodeBlock.builder()
+                    .addStatement("$T $N = new $T()", returnType, result, ParameterizedTypeName.get(ClassName.get(ArrayList.class), TypeName.get(targetType)))
+                    .beginControlFlow("while ($N.next())", resultSet)
+                    .addStatement(newClass(targetType, t))
+                    .add(knowIndex(entrySets, t, resultSet, targetType, names))
+                    .addStatement("$N.$L($N)", result, "add", t)
+                    .endControlFlow()
+                    .addStatement("return $N", result)
+                    .build();
         }
+    }
+
+    private static Map<Integer, FieldMetaData> getIntegerFieldMetaDataMap(PlainSelect plainSelect, Type targetType)
+    {
+        Map<Integer, FieldMetaData> names = new LinkedHashMap<>();
+        List<SelectItem<?>> selectItems = plainSelect.getSelectItems();
+        TypeMetaData typeMetaData = TypeMetaData.get(targetType);
+        List<FieldMetaData> fieldMetaData = typeMetaData.getFieldMetaData();
+        for (int i = 0; i < selectItems.size(); i++)
+        {
+            SelectItem<?> item = selectItems.get(i);
+            String itemName = item.toString();
+            Alias alias = item.getAlias();
+            String targetName = alias == null ? itemName : alias.getName();
+            String cleared = SqlUtil.clearColumn(targetName);
+            Optional<FieldMetaData> first = fieldMetaData.stream().filter(f -> f.getColumnName().equals(cleared)).findFirst();
+            if (first.isPresent())
+            {
+                names.put(i + 1, first.get());
+            }
+        }
+        return names;
+    }
+
+    private CodeBlock stringIntSet(Type TargetType, FieldSpec entrySets, FieldSpec resultSet)
+    {
+        StringBuilder sb = new StringBuilder();
+        List<Object> args = new ArrayList<>();
+        args.add(StringIntSet.class);
+        args.add(entrySets);
+        args.add(resultSet);
+        sb.append("$T $N = getIndexEntrySet($N");
+        TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
+        for (FieldMetaData fieldMetaData : typeMetaData.getFieldMetaData())
+        {
+            sb.append(",$S");
+            args.add(fieldMetaData.getColumnName());
+        }
+        sb.append(")");
+        return CodeBlock.builder()
+                .add(sb.toString(), args.toArray())
+                .build();
     }
 
     private CodeBlock newClass(Type TargetType, FieldSpec t)
@@ -319,50 +385,6 @@ public class FinalTaskListener implements TaskListener
         return CodeBlock.builder()
                 .add("$T $N = new $T()", TypeName.get(TargetType), t, TypeName.get(TargetType))
                 .build();
-    }
-
-    private CodeBlock unKnowOrKnowIndex(String sql, FieldSpec entrySets, FieldSpec t, FieldSpec resultSet, Type TargetType)
-    {
-        boolean hasStar = false;
-        Map<Integer, FieldMetaData> names = new LinkedHashMap<>();
-        try
-        {
-            Select select = (Select) CCJSqlParserUtil.parse(sql);
-            PlainSelect plainSelect = select.getPlainSelect();
-            List<SelectItem<?>> selectItems = plainSelect.getSelectItems();
-            TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
-            List<FieldMetaData> fieldMetaData = typeMetaData.getFieldMetaData();
-            for (int i = 0; i < selectItems.size(); i++)
-            {
-                SelectItem<?> item = selectItems.get(i);
-                String itemName = item.toString();
-                if (itemName.equals("*") || itemName.contains(".*"))
-                {
-                    hasStar = true;
-                    break;
-                }
-                Alias alias = item.getAlias();
-                String targetName = alias == null ? itemName : alias.getName();
-                String cleared = SqlUtil.clearColumn(targetName);
-                Optional<FieldMetaData> first = fieldMetaData.stream().filter(f -> f.getColumnName().equals(cleared)).findFirst();
-                if (first.isPresent())
-                {
-                    names.put(i + 1, first.get());
-                }
-            }
-        }
-        catch (JSQLParserException e)
-        {
-            throw new RuntimeException(e);
-        }
-        if (!hasStar)
-        {
-            return knowIndex(entrySets, t, resultSet, TargetType, names);
-        }
-        else
-        {
-            return unKnowIndex(entrySets, t, resultSet, TargetType);
-        }
     }
 
     private CodeBlock knowIndex(FieldSpec entrySets, FieldSpec t, FieldSpec resultSet, Type TargetType, Map<Integer, FieldMetaData> fieldMetaDataMap)
@@ -375,7 +397,7 @@ public class FinalTaskListener implements TaskListener
             TypeName varType = TypeName.get(metaData.getType());
             FieldSpec value = FieldSpec.builder(varType, "value" + index).build();
 
-            builder.add(getValue(metaData.getType(), value, resultSet, CodeBlock.of("$L", entry.getKey()),index))
+            builder.add(getValue(metaData.getType(), value, resultSet, CodeBlock.of("$L", entry.getKey()), index))
                     .addStatement("$N.$L($N)", t, metaData.getSetterName(), value);
             index++;
         }
@@ -396,37 +418,29 @@ public class FinalTaskListener implements TaskListener
     {
         CodeBlock.Builder sw = CodeBlock.builder()
                 .beginControlFlow("switch ($N.$L())", entry, "getName");
+        int index = 1;
         TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
         for (FieldMetaData metaData : typeMetaData.getFieldMetaData())
         {
-            sw.beginControlFlow("case $S:", metaData.getColumnName());
+            sw.add("case $S:\n", metaData.getColumnName());
             TypeName varType = TypeName.get(metaData.getType());
-            FieldSpec value = FieldSpec.builder(varType, "value").build();
+            FieldSpec value = FieldSpec.builder(varType, "value" + index).build();
 
             // getValue
-            sw.add(getValue(metaData.getType(), value, resultSet, CodeBlock.of("$N.$L()", entry, "getIndex")));
+            sw.add(getValue(metaData.getType(), value, resultSet, CodeBlock.of("$N.$L()", entry, "getIndex"), index));
 
             // setValue
             sw.addStatement("$N.$L($N)", t, metaData.getSetterName(), value);
 
-            sw.endControlFlow("break");
+            sw.addStatement("break");
+            index++;
         }
         sw.endControlFlow();
         return sw.build();
     }
 
-    private CodeBlock getValue(Type type, FieldSpec value, FieldSpec resultSet, CodeBlock index)
-    {
-        return getValue(type, value, resultSet, index, 0);
-    }
-
     private CodeBlock getValue(Type type, FieldSpec value, FieldSpec resultSet, CodeBlock index, int i)
     {
-        String ii = "";
-        if (i != 0)
-        {
-            ii = String.valueOf(i);
-        }
         if (isString(type))
         {
             return CodeBlock.builder()
@@ -435,7 +449,7 @@ public class FinalTaskListener implements TaskListener
         }
         else if (isChar(type))
         {
-            FieldSpec temp = FieldSpec.builder(String.class, "temp" + ii).build();
+            FieldSpec temp = FieldSpec.builder(String.class, "temp" + i).build();
             return CodeBlock.builder()
                     // String temp = resultSet.getString(index)
                     .addStatement("$T $N = $N.$L($L)", String.class, temp, resultSet, "getString", index)
@@ -505,7 +519,7 @@ public class FinalTaskListener implements TaskListener
         }
         else if (isLocalDate(type))
         {
-            FieldSpec temp = FieldSpec.builder(Date.class, "temp" + ii).build();
+            FieldSpec temp = FieldSpec.builder(Date.class, "temp" + i).build();
             return CodeBlock.builder()
                     // Date temp = resultSet.getDate(index)
                     .addStatement("$T $N = $N.$L($L)", Date.class, temp, resultSet, "getDate", index)
@@ -515,7 +529,7 @@ public class FinalTaskListener implements TaskListener
         }
         else if (isLocalTime(type))
         {
-            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + ii).build();
+            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + i).build();
             return CodeBlock.builder()
                     // Time temp = resultSet.getTime(index)
                     .addStatement("$T $N = $N.$L($L)", Time.class, temp, resultSet, "getTime", index)
@@ -525,7 +539,7 @@ public class FinalTaskListener implements TaskListener
         }
         else if (isLocalDateTime(type))
         {
-            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + ii).build();
+            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + i).build();
             return CodeBlock.builder()
                     // Timestamp temp = resultSet.getTimestamp(index)
                     .addStatement("$T $N = $N.$L($L)", Timestamp.class, temp, resultSet, "getTimestamp", index)
@@ -541,7 +555,7 @@ public class FinalTaskListener implements TaskListener
         }
         else if (isBigInteger(type))
         {
-            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + ii).build();
+            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + i).build();
             return CodeBlock.builder()
                     // BigDecimal temp = resultSet.getBigDecimal(index)
                     .addStatement("$T $N = $N.$L($L)", BigDecimal.class, temp, resultSet, "getBigDecimal", index)
@@ -551,7 +565,7 @@ public class FinalTaskListener implements TaskListener
         }
         else if (isEnum(type))
         {
-            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + ii).build();
+            FieldSpec temp = FieldSpec.builder(Time.class, "temp" + i).build();
             return CodeBlock.builder()
                     // String temp = resultSet.getString(index)
                     .addStatement("$T $N = $N.$L($L)", String.class, temp, resultSet, "getString", index)
@@ -563,23 +577,6 @@ public class FinalTaskListener implements TaskListener
         {
             throw new RuntimeException(type.toString());
         }
-    }
-
-    private CodeBlock getByName(FieldSpec t, Type TargetType, FieldSpec resultSet)
-    {
-        TypeMetaData typeMetaData = TypeMetaData.get(TargetType);
-        CodeBlock.Builder builder = CodeBlock.builder();
-        for (FieldMetaData metaData : typeMetaData.getFieldMetaData())
-        {
-            TypeName varType = TypeName.get(metaData.getType());
-            FieldSpec value = FieldSpec.builder(varType, "value").build();
-            builder.beginControlFlow("")
-                    .add(getValue(metaData.getType(), value, resultSet, CodeBlock.of("$S", metaData.getColumnName())))
-                    .addStatement("$N.$L($N)", t, metaData.getSetterName(), value)
-                    .endControlFlow()
-                    .build();
-        }
-        return builder.build();
     }
 
     private final Set<String> createdImpl = new HashSet<>();

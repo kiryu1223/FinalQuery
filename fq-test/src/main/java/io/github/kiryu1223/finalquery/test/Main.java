@@ -1,31 +1,22 @@
 package io.github.kiryu1223.finalquery.test;
 
 import com.zaxxer.hikari.HikariDataSource;
-import io.github.kiryu1223.finalquery.service.util.SqlUtil;
+import io.github.kiryu1223.finalquery.annotation.MapperManager;
+import io.github.kiryu1223.finalquery.api.Mappers;
 import io.github.kiryu1223.finalquery.service.util.StringIntPair;
 import io.github.kiryu1223.finalquery.service.util.StringIntSet;
-import io.github.kiryu1223.finalquery.test.mapper.DepartmentMapper;
 import io.github.kiryu1223.finalquery.test.controller.MyMapperController;
-import io.github.kiryu1223.finalquery.test.mapper.EmployeeMapper;
-import io.github.kiryu1223.finalquery.test.mapper.SalaryMapper;
 import io.github.kiryu1223.finalquery.test.pojo.Department;
-import io.github.kiryu1223.finalquery.test.pojo.Employee;
-import io.github.kiryu1223.finalquery.test.pojo.Gender;
 import io.github.kiryu1223.finalquery.test.pojo.Salary;
+import io.github.kiryu1223.finalquery.util.ITypeHandler;
+import io.github.kiryu1223.finalquery.util.UnKnowTypeHandler;
 import net.sf.jsqlparser.JSQLParserException;
-import net.sf.jsqlparser.expression.Alias;
-import net.sf.jsqlparser.parser.CCJSqlParserUtil;
-import net.sf.jsqlparser.statement.Statement;
-import net.sf.jsqlparser.statement.select.PlainSelect;
-import net.sf.jsqlparser.statement.select.Select;
-import net.sf.jsqlparser.statement.select.SelectItem;
 
 import javax.sql.DataSource;
 import java.sql.*;
+import java.sql.Date;
 import java.time.LocalDate;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+import java.util.*;
 
 public class Main
 {
@@ -38,11 +29,11 @@ public class Main
 //        dataSource.setUsername("postgres");
 //        dataSource.setPassword("root");
 
-        HikariDataSource dataSource = new HikariDataSource();
-        dataSource.setJdbcUrl("jdbc:mysql://127.0.0.1:3306/employees?rewriteBatchedStatements=true&useUnicode=true&characterEncoding=UTF-8");
-        dataSource.setUsername("root");
-        dataSource.setPassword("root");
-        dataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
+//        HikariDataSource dataSource = new HikariDataSource();
+//        dataSource.setJdbcUrl("jdbc:mysql://127.0.0.1:3306/employees?rewriteBatchedStatements=true&useUnicode=true&characterEncoding=UTF-8");
+//        dataSource.setUsername("root");
+//        dataSource.setPassword("root");
+//        dataSource.setDriverClassName("com.mysql.cj.jdbc.Driver");
 
 //        MyMapperController myMapperController = new MyMapperController();
 //        myMapperController.setDataSource(dataSource);
@@ -60,18 +51,29 @@ public class Main
 //            System.out.println("返回" + all.size() + "条数据");
 //        }
 
-        {
-            long start = System.currentTimeMillis();
-            List<Salary> salaries = test1(dataSource);
-            System.out.println("test1耗时" + (System.currentTimeMillis() - start) + "毫秒");
-            System.out.println("返回" + salaries.size() + "条数据");
-        }
-        {
-            long start = System.currentTimeMillis();
-            List<Salary> salaries = test2(dataSource);
-            System.out.println("test2耗时" + (System.currentTimeMillis() - start) + "毫秒");
-            System.out.println("返回" + salaries.size() + "条数据");
-        }
+//        {
+//            long start = System.currentTimeMillis();
+//            List<Salary> salaries = test1(dataSource);
+//            System.out.println("test1耗时" + (System.currentTimeMillis() - start) + "毫秒");
+//            System.out.println("返回" + salaries.size() + "条数据");
+//        }
+//        {
+//            long start = System.currentTimeMillis();
+//            List<Salary> salaries = test2(dataSource);
+//            System.out.println("test2耗时" + (System.currentTimeMillis() - start) + "毫秒");
+//            System.out.println("返回" + salaries.size() + "条数据");
+//        }
+//        {
+//            long start = System.currentTimeMillis();
+//            List<Department> salaries = test3(dataSource);
+//            System.out.println("test3耗时" + (System.currentTimeMillis() - start) + "毫秒");
+//            System.out.println("返回" + salaries.size() + "条数据");
+//        }
+
+        Map<Class<?>,Integer> map=new HashMap<>();
+        map.put(boolean.class,1);
+        map.put(Boolean.class,2);
+        System.out.println(map);
     }
 
     private static List<Salary> test1(DataSource dataSource)
@@ -151,6 +153,33 @@ public class Main
                 result.add(t);
             }
             System.out.println(System.currentTimeMillis() - start);
+            return result;
+        }
+        catch (SQLException e)
+        {
+            throw new RuntimeException(e);
+        }
+    }
+
+    private static List<Department> test3(DataSource dataSource)
+    {
+        try (Connection connection = dataSource.getConnection())
+        {
+            ITypeHandler<String> typeHandler = Mappers.getTypeHandler(String.class);
+            PreparedStatement preparedStatement = connection.prepareStatement("SELECT d.dept_no,d.dept_name FROM departments AS d ORDER BY d.dept_no");
+            ResultSet resultSet = preparedStatement.executeQuery();
+            List<Department> result = new ArrayList<>();
+            while (resultSet.next())
+            {
+                Department t = new Department();
+
+                String value1 = typeHandler.getValue(resultSet, 1);
+                t.setNumber(value1);
+                String value2 = typeHandler.getValue(resultSet, 2);
+                t.setName(value2);
+
+                result.add(t);
+            }
             return result;
         }
         catch (SQLException e)
